@@ -1,16 +1,26 @@
 from datetime import datetime
-
-from flask import Flask, render_template, redirect, url_for
+from flask import Flask, render_template, redirect, url_for, request, send_from_directory, flash
 from flask_bootstrap import Bootstrap
 from flask_ckeditor import CKEditor
 from flask_sqlalchemy import SQLAlchemy
-
 from Forms.create_post_form import CreatePostForm
+from flask_login import UserMixin, login_user, logout_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import LoginManager, login_required, current_user
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '8BYkEfBA6O6donzWlSihBXox7C0sKR6b'
 ckeditor = CKEditor(app)
 Bootstrap(app)
+
+login_manager = LoginManager()
+login_manager.init_app(app)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.get(user_id)
+
 
 ##CONNECT TO DB
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///posts.db'
@@ -27,6 +37,39 @@ class BlogPost(db.Model):
     body = db.Column(db.Text, nullable=False)
     author = db.Column(db.String(250), nullable=False)
     img_url = db.Column(db.String(250), nullable=False)
+
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(100), unique=True)
+    password = db.Column(db.String(100))
+    name = db.Column(db.String(1000))
+
+    def __init__(self, email, password, name):
+        self.email = email
+        self.password = password
+        self.name = name
+
+    def get_id(self):
+        return str(self.id)  # Convert id to string since Flask-Login expects unicode strings
+
+    @staticmethod
+    def get(user_id):
+        return User.query.get(int(user_id))  # Convert user_id to integer before querying the database
+
+    def is_authenticated(self):
+        # Define your authentication logic here
+        return True  # For simplicity, always return True. Implement your logic accordingly.
+
+    def is_active(self):
+        # Define your activation logic here
+        return True  # For simplicity, always return True. Implement your logic accordingly.
+
+    def is_anonymous(self):
+        return False  # Since we don't support anonymous users, always return False
+
+
+# db.create_all()
 
 
 @app.route('/')
@@ -104,6 +147,92 @@ def delete_post(post_id):
     db.session.delete(deleted_post)
     db.session.commit()
     return redirect(url_for('get_all_posts'))
+
+
+@app.route('/user')
+def all_user():
+    results = db.session.query(User).all()
+    for result in results:
+        print(result.password)
+    return "user"
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == "POST":
+        email = request.form["email"]
+        password = request.form['password']
+        user = User.query.filter_by(email=email).first()
+
+        if user and check_password_hash(user.password, password):
+            login_user(user)
+
+            return redirect(url_for('secrets', name=user.name, logged_in=current_user.is_authenticated()))
+        if not check_password_hash(user.password, password):
+            flash("password is incorrect")
+            return redirect(url_for('login'))
+        else:
+            flash(f"{request.form['email']} isn't found in the database")
+            return redirect(url_for('login'))
+
+    return render_template('login.html', logged_in=current_user.is_authenticated)
+
+
+@app.route('/logout', methods=['GET'])
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register_user():
+    if request.method == "POST":
+        # Check if the email already exists in the database
+
+        if User.query.filter_by(email=request.form["email"]).first():
+            flash(f'You Have already signed up using {request.form["email"]} ,Log in instead!')
+            return redirect(url_for('login'))
+        else:
+            # If the email does not exist, hash the password and create a new user
+            hashed_password = generate_password_hash(request.form["password"], method='pbkdf2:sha256', salt_length=8)
+            print(hashed_password)
+            new_user = User(
+                email=request.form["email"],
+                password=hashed_password,
+                name=request.form["name"]
+            )
+
+            # Add the new user to the database
+            db.session.add(new_user)
+            db.session.commit()
+
+            # Log in the new user
+            login_user(new_user)
+
+            # Redirect to a page for authenticated users, passing the user's name as a parameter
+            return redirect(url_for('secrets', name=request.form["name"]))
+
+    # If the request method is GET, render the registration template
+    return render_template('register.html', logged_in=current_user.is_authenticated)
+
+
+@app.route('/download', methods=['GET'])
+@login_required
+def download_file():
+    """This route will download a file """
+    # downloading file dynamically
+    return send_from_directory('static/files', filename='cheat_sheet.pdf', as_attachment=True)
+
+
+@app.route('/secrets/<name>', methods=["GET"])
+@login_required
+def secrets(name):
+    return render_template('secrets.html', name=name, logged_in=current_user.is_authenticated)
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.get(user_id)
 
 
 if __name__ == "__main__":
